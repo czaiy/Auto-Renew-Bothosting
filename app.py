@@ -540,12 +540,23 @@ def main():
 
             print("⏳ 等待新的过期时间...")
             sb.sleep(6)
+            # 刷新账单页再读, 避免 SPA 未更新 DOM 导致误判“未变化”
+            try:
+                sb.open("https://bot-hosting.net/a/billings")
+                sb.wait_for_ready_state_complete()
+                sb.sleep(3)
+            except Exception as e:
+                print(f"⚠️ 刷新账单页失败: {e}")
 
             # 提取新的到期日期和倒计时
             new_page_text = sb.get_page_source()
             new_expiry = extract_expiry_date(new_page_text)
             new_match = re.search(r"Renew in (\d{2}:\d{2}:\d{2})", new_page_text)
-            if new_match:
+            page_lower = new_page_text.lower()
+            renew_hint = any(k in page_lower for k in (
+                "renewed", "successfully", "extended", "感谢", "成功",
+            ))
+            if new_match and (new_expiry != current_expiry or renew_hint):
                 new_countdown = new_match.group(1)
                 print(f"✅ 续期成功！新的倒计时: {new_countdown}")
                 if new_expiry:
