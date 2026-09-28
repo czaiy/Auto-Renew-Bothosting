@@ -64,19 +64,20 @@ def update_github_secret(secret_name, new_value):
         return False
     masked = new_value[:4] + "..." + new_value[-4:] if len(new_value) > 8 else "***"
     print(f"🔄 更新 Secret: {secret_name} (新值: {masked})")
+    repo = os.environ.get("GITHUB_REPOSITORY") or "czaiy/Auto-Renew-Bothosting"
     try:
         env = os.environ.copy()
         if GH_TOKEN:
             env["GH_TOKEN"] = GH_TOKEN
         proc = subprocess.run(
-            ["gh", "secret", "set", secret_name, "--body", new_value],
+            ["gh", "secret", "set", secret_name, "--body", new_value, "--repo", repo],
             capture_output=True, text=True, timeout=30, check=False,
             env=env
         )
         if proc.returncode == 0:
             return True
         else:
-            print(f"❌ 更新失败: {proc.stderr.strip()}")
+            print(f"❌ 更新失败: {(proc.stderr or proc.stdout or '').strip()[:300]}")
             return False
     except Exception as e:
         print(f"❌ 异常: {e}")
@@ -143,9 +144,17 @@ def get_current_ip(proxy_server: str = "") -> str:
     proxies = None
     if proxy_server:
         proxies = {"http": proxy_server, "https": proxy_server}
-    response = requests.get("https://api.ip.sb/ip", proxies=proxies, timeout=15)
-    response.raise_for_status()
-    return response.text.strip()
+    try:
+        response = requests.get("https://api.ip.sb/ip", proxies=proxies, timeout=15)
+        response.raise_for_status()
+        return response.text.strip()
+    except Exception as e:
+        if proxies:
+            print(f"⚠️ 经代理获取 IP 失败({e}), 改直连")
+            response = requests.get("https://api.ip.sb/ip", timeout=15)
+            response.raise_for_status()
+            return response.text.strip()
+        raise
 
 # 时间格式化
 def format_countdown(countdown_str: str) -> str:
@@ -201,10 +210,8 @@ def capture_discord_state(sb) -> str:
     time.sleep(2)
 
     url = sb.get_current_url()
-    if "discord.com" not in url:
-        print(f"⚠️ 未跳转到 Discord 相关页面，当前 URL：{url}")
-        return ""
-
+    print(f"   · state 落地页: {url[:120]}")
+    # 宽松匹配: 只要 URL 里有 state= 即可(bot-hosting / discord 域名都见过)
     m = STATE_RE.search(url)
     if not m:
         print(f"❌ 未能从 URL 中解析出 state，当前 URL：{url}")
@@ -258,21 +265,41 @@ def discord_authorize(state: str) -> str:
         },
     })
 
-    # 如果配置了代理，Discord API 请求也走代理
-    proxies = None
+    # Discord API: 先走代理(若有), 失败/SSL 被掐断时直连重试。
+    # 实测 sing-box socks5 访问 discord.com 会 SSL EOF, 直连往往可通。
+    proxy_attempts = []
     _is_proxy = os.environ.get("IS_PROXY", "false").lower() == "true"
     _proxy_server = os.environ.get("PROXY_SERVER", "").strip() or "http://127.0.0.1:1080"
     if _is_proxy:
-        proxies = {"http": _proxy_server, "https": _proxy_server}
+        proxy_attempts.append({"http": _proxy_server, "https": _proxy_server})
+    proxy_attempts.append(None)
 
-    try:
-        resp = requests.post(authorize_url, headers=headers, data=body, proxies=proxies, timeout=20)
+    last_err = ""
+    resp_data = None
+    for px in proxy_attempts:
+        label = f"proxy={px}" if px else "direct"
+        try:
+            resp = requests.post(authorize_url, headers=headers, data=body, proxies=px, timeout=20)
+        except Exception as e:
+            last_err = f"{label}: {e}"
+            print(f"❌ Discord OAuth2 授权异常({label}): {e}")
+            continue
         if resp.status_code != 200:
-            print(f"❌ Discord OAuth2 授权失败: HTTP {resp.status_code} - {resp.text[:300]}")
-            return ""
-        resp_data = resp.json()
-    except Exception as e:
-        print(f"❌ Discord OAuth2 授权异常: {e}")
+            last_err = f"{label}: HTTP {resp.status_code} - {resp.text[:300]}"
+            print(f"❌ Discord OAuth2 授权失败({label}): HTTP {resp.status_code} - {resp.text[:300]}")
+            continue
+        try:
+            resp_data = resp.json()
+        except Exception as e:
+            last_err = f"{label}: JSON 解析失败 {e}"
+            continue
+        if resp_data.get("location"):
+            break
+        last_err = f"{label}: 响应无 location: {resp_data}"
+        resp_data = None
+
+    if not resp_data:
+        print(f"❌ Discord authorize 全部通道失败: {last_err}")
         return ""
 
     location = resp_data.get("location", "")
@@ -424,7 +451,8 @@ def main():
             elif SESSION_TOKEN and DC_TOKEN:
                 error_msg = "SESSION_TOKEN 和 Discord OAuth 均失败"
             send_telegram_message(format_notification("❌ 登录失败", error=error_msg))
-            return
+            # 登录失败必须让 Actions 变红, 避免假绿
+            sys.exit(1)
 
         if _LOGIN_METHOD == "Discord Token":
             print("ℹ️ 本次使用 Discord OAuth 登录，新的 SESSION_TOKEN 将自动更新到 Secrets")
