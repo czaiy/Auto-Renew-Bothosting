@@ -538,55 +538,96 @@ def main():
             except Exception as e:
                 print(f"续期按钮点击失败: {e}")
 
-            print("⏳ 等待新的过期时间...")
-            sb.sleep(6)
-            # 刷新账单页再读, 避免 SPA 未更新 DOM 导致误判“未变化”
-            try:
-                sb.open("https://bot-hosting.net/a/billings")
-                sb.wait_for_ready_state_complete()
-                sb.sleep(3)
-            except Exception as e:
-                print(f"⚠️ 刷新账单页失败: {e}")
+            print("⏳ 等待续期生效(轮询页面, 不刷新以免中断请求)...")
 
-            # 提取新的到期日期和倒计时
-            new_page_text = sb.get_page_source()
-            new_expiry = extract_expiry_date(new_page_text)
-            new_match = re.search(r"Renew in (\d{2}:\d{2}:\d{2})", new_page_text)
-            page_lower = new_page_text.lower()
-            renew_hint = any(k in page_lower for k in (
-                "renewed", "successfully", "extended", "感谢", "成功",
-            ))
-            if new_match and (new_expiry != current_expiry or renew_hint):
-                new_countdown = new_match.group(1)
-                print(f"✅ 续期成功！新的倒计时: {new_countdown}")
+            # Toast/提示关键字: 命中即判定
+            SUCCESS_HINTS = ("renewed", "successfully", "extended", "感谢", "成功",
+                             "extension", "renews")
+            ERROR_HINTS = ("too many", "error", "failed", "please try again",
+                           "already", "无效", "失败", "错误", "频繁", "稍后再试")
+
+            new_expiry = current_expiry
+            new_countdown = ""
+            renew_hint = False
+            error_hint = ""
+            for _ in range(14):   # 最多 ~42s
+                sb.sleep(3)
+                src = sb.get_page_source() or ""
+                low = src.lower()
+                ne = extract_expiry_date(src)
+                nm = re.search(r"Renew in (\d{2}:\d{2}:\d{2})", src)
+                if ne and ne != current_expiry:
+                    new_expiry = ne
+                    print(f"✅ 检测到到期日期变化: {current_expiry} -> {ne}")
+                    break
+                if nm:
+                    new_countdown = nm.group(1)
+                if any(k in low for k in SUCCESS_HINTS):
+                    renew_hint = True
+                    break
+                for k in ERROR_HINTS:
+                    if k in low:
+                        error_hint = k
+                        break
+                if error_hint:
+                    break
+
+            if not (new_expiry != current_expiry or new_countdown or renew_hint):
+                # 兜底: 刷新账单页再读一次
+                try:
+                    sb.open("https://bot-hosting.net/a/billings")
+                    sb.wait_for_ready_state_complete()
+                    sb.sleep(3)
+                except Exception as e:
+                    print(f"⚠️ 刷新账单页失败: {e}")
+                src = sb.get_page_source() or ""
+                new_expiry = extract_expiry_date(src) or new_expiry
+                nm = re.search(r"Renew in (\d{2}:\d{2}:\d{2})", src)
+                if nm:
+                    new_countdown = nm.group(1)
+                low = src.lower()
+                renew_hint = any(k in low for k in SUCCESS_HINTS)
+                if not error_hint:
+                    for k in ERROR_HINTS:
+                        if k in low:
+                            error_hint = k
+                            break
+
+            if new_expiry != current_expiry or renew_hint:
+                print(f"✅ 续期成功！")
                 if new_expiry:
                     print(f"📅 新的到期日期: {new_expiry}")
+                extra = f"⏱️ 可续期时间: {format_countdown(new_countdown)}后" if new_countdown else "到期日期已更新"
                 send_telegram_message(
                     format_notification(
                         "✅ 续期成功",
-                        extra=f"⏱️ 可续期时间: {format_countdown(new_countdown)}后",
+                        extra=extra,
                         expiry_date=new_expiry or "（未获取到）"
                     )
                 )
             else:
-                if new_expiry and new_expiry != current_expiry:
-                    print(f"✅ 续期成功，到期日期已更新为: {new_expiry}")
-                    send_telegram_message(
-                        format_notification(
-                            "✅ 续期成功",
-                            extra="到期日期已更新",
-                            expiry_date=new_expiry
-                        )
+                # 失败诊断: 截图 + 输出页面可见文本片段
+                try:
+                    sb.save_screenshot("renew_failed.png")
+                    print("📸 已保存截图 renew_failed.png")
+                except Exception:
+                    pass
+                try:
+                    body = sb.get_text("body") or ""
+                    body_clean = re.sub(r"\s+", " ", body).strip()
+                    if body_clean:
+                        print(f"📄 页面文本片段: {body_clean[:300]!r}")
+                except Exception:
+                    pass
+                reason = f"页面提示: {error_hint}" if error_hint else "到期日期未变化"
+                print(f"⚠️ 续期结果未知，{reason}")
+                send_telegram_message(
+                    format_notification(
+                        "⚠️ 续期可能未成功",
+                        extra=f"原因: {reason}，请登录后台检查",
+                        expiry_date=current_expiry or "（未获取到）"
                     )
-                else:
-                    print("⚠️ 续期结果未知，到期日期未变化，请手动检查")
-                    send_telegram_message(
-                        format_notification(
-                            "⚠️ 续期可能未成功",
-                            extra="请登录后台检查",
-                            expiry_date=current_expiry or "（未获取到）"
-                        )
-                    )
+                )
 
         else:
             if countdown_text:
@@ -631,3 +672,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
