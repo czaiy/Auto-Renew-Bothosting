@@ -544,8 +544,40 @@ def main():
                 body_before = sb.get_text("body") or ""
                 body_before = re.sub(r"\s+", " ", body_before).strip()
                 print(f"📄 点击后页面文本: {body_before[:500]!r}")
+                # 单独抓 "expires in" / "Renew now" 等续期状态文案, 判断是否作用于 deployment
+                for m in re.finditer(r"[^.]*?expires in \d+ (?:hour|minute|day)s?[^.]*\.", body_before, re.I):
+                    print(f"   · 续期状态: {m.group(0).strip()[:200]}")
+                for m in re.finditer(r"[^.]*?Renew ?(?:now|manually)[^.]*\.", body_before, re.I):
+                    print(f"   · Renew 文案: {m.group(0).strip()[:200]}")
             except Exception as e:
                 print(f"⚠️ 读取点击后页面文本失败: {e}")
+
+            # 抓 toast/弹窗/错误提示元素(出现即说明有反馈)
+            try:
+                toast_selectors = ["[class*='toast']", "[class*='alert']", "[class*='snackbar']",
+                                   "[role='alert']", "[class*='notification']", "[class*='modal']"]
+                for sel in toast_selectors:
+                    try:
+                        if sb.is_element_present(sel):
+                            txt = (sb.get_text(sel) or "").strip()
+                            txt = re.sub(r"\s+", " ", txt)[:200]
+                            if txt:
+                                print(f"   🧩 元素[{sel}]: {txt!r}")
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+
+            # 浏览器控制台日志(常见: 续期 fetch 失败/被 CF 拦截)
+            try:
+                console = sb.get_driver().get_log("browser") or []
+                for entry in console[-8:]:
+                    lvl = entry.get("level", "")
+                    msg = entry.get("message", "")
+                    if "error" in lvl.lower() or "error" in msg.lower() or "fail" in msg.lower() or "renew" in msg.lower():
+                        print(f"   🖥️ console[{lvl}]: {msg[:300]}")
+            except Exception as e:
+                print(f"⚠️ 读取浏览器控制台失败: {e}")
 
             print("⏳ 等待续期生效(轮询页面, 不刷新以免中断请求)...")
 
