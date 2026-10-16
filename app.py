@@ -169,6 +169,21 @@ def format_countdown(countdown_str: str) -> str:
     except:
         return countdown_str
 
+# 倒计时文案: 新版 "Renewal cooldown", 旧版 "Renew in" (站点 10-16 改版)
+COUNTDOWN_RE = re.compile(r"(?:Renewal cooldown|Renew in)\s*(\d{2}:\d{2}:\d{2})", re.I)
+
+
+def extract_countdown(text: str) -> str:
+    m = COUNTDOWN_RE.search(text or "")
+    return m.group(1) if m else ""
+
+
+def extract_countdown_text_keyword(text: str) -> bool:
+    """页面是否出现倒计时关键词(用于识别'续期即将可用' UI)"""
+    low = (text or "").lower()
+    return "renewal cooldown" in low or "renew in" in low
+
+
 # 获取过期日期
 def extract_expiry_date(page_source: str) -> str:
     patterns = [
@@ -481,12 +496,11 @@ def main():
             try:
                 if sb.is_element_visible(selector):
                     button_text = sb.get_text(selector)
-                    if "Renew in" in button_text:
-                        match = re.search(r"Renew in (\d{2}:\d{2}:\d{2})", button_text)
-                        if match:
-                            countdown_text = match.group(1)
+                    cd = extract_countdown(button_text)
+                    if cd:
+                        countdown_text = cd
                         break
-                    elif "Renew" in button_text and "in" not in button_text.lower():
+                    elif "Renew" in button_text and not extract_countdown_text_keyword(button_text):
                         outer_renew_selector = selector
                         print(f"✅ 续期按钮可用: '{button_text}'")
                         break
@@ -531,12 +545,25 @@ def main():
             time.sleep(5) 
 
             modal_button_clicked = False
-            try:
-                sb.click('button:contains("Renew for 4 days")', timeout=8)
-                modal_button_clicked = True
-                print("✅ 已点击续期按钮")
-            except Exception as e:
-                print(f"续期按钮点击失败: {e}")
+            # 站点 2026-10-16 改版: 弹窗确认按钮变更为 div[role="dialog"] button.btn-primary
+            # 旧文本选择器("Renew for 4 days")已失效, 点了没反应
+            renew_button_selectors = [
+                'div[role="dialog"] button.btn-primary',
+                'div[role="dialog"] button[type="button"]',
+                'button:contains("Renew for 4 days")',
+                'button.btn-primary',
+            ]
+            for selector in renew_button_selectors:
+                try:
+                    if sb.is_element_present(selector):
+                        sb.click(selector, timeout=8)
+                        modal_button_clicked = True
+                        print(f"✅ 已点击续期按钮 ({selector})")
+                        break
+                except Exception as e:
+                    print(f"续期按钮点击失败({selector}): {e}")
+            if not modal_button_clicked:
+                print("❌ 未找到可用的续期确认按钮")
 
             # 点击后立即 dump 页面可见文本(捕捉 toast/报错)
             try:
@@ -570,7 +597,7 @@ def main():
 
             # 浏览器控制台日志(常见: 续期 fetch 失败/被 CF 拦截)
             try:
-                console = sb.get_driver().get_log("browser") or []
+                console = sb.driver.get_log("browser") or []
                 for entry in console[-8:]:
                     lvl = entry.get("level", "")
                     msg = entry.get("message", "")
@@ -596,13 +623,13 @@ def main():
                 src = sb.get_page_source() or ""
                 low = src.lower()
                 ne = extract_expiry_date(src)
-                nm = re.search(r"Renew in (\d{2}:\d{2}:\d{2})", src)
+                nm = extract_countdown(src)
                 if ne and ne != current_expiry:
                     new_expiry = ne
                     print(f"✅ 检测到到期日期变化: {current_expiry} -> {ne}")
                     break
                 if nm:
-                    new_countdown = nm.group(1)
+                    new_countdown = nm
                 for k in SUCCESS_HINTS:
                     if k in low:
                         renew_hint = k
@@ -626,9 +653,9 @@ def main():
                 if ne and ne != current_expiry:
                     new_expiry = ne
                     print(f"✅ 刷新后检测到到期日期变化: {current_expiry} -> {ne}")
-                nm = re.search(r"Renew in (\d{2}:\d{2}:\d{2})", src)
+                nm = extract_countdown(src)
                 if nm:
-                    new_countdown = nm.group(1)
+                    new_countdown = nm
                 for k in SUCCESS_HINTS:
                     if k in low:
                         renew_hint = renew_hint or k
