@@ -538,17 +538,26 @@ def main():
             except Exception as e:
                 print(f"续期按钮点击失败: {e}")
 
+            # 点击后立即 dump 页面可见文本(捕捉 toast/报错)
+            try:
+                time.sleep(2)
+                body_before = sb.get_text("body") or ""
+                body_before = re.sub(r"\s+", " ", body_before).strip()
+                print(f"📄 点击后页面文本: {body_before[:500]!r}")
+            except Exception as e:
+                print(f"⚠️ 读取点击后页面文本失败: {e}")
+
             print("⏳ 等待续期生效(轮询页面, 不刷新以免中断请求)...")
 
-            # Toast/提示关键字: 命中即判定
-            SUCCESS_HINTS = ("renewed", "successfully", "extended", "感谢", "成功",
-                             "extension", "renews")
-            ERROR_HINTS = ("too many", "error", "failed", "please try again",
-                           "already", "无效", "失败", "错误", "频繁", "稍后再试")
+            # 判定以【到期日期真实变化】为准; 关键词只作参考
+            SUCCESS_HINTS = ("renewed", "renewal successful", "successfully extended",
+                             "successfully", "extended your", "感谢", "已成功续期")
+            ERROR_HINTS = ("too many", "failed", "error", "please try again",
+                           "already", "invalid", "无效", "失败", "错误", "频繁", "稍后再试")
 
             new_expiry = current_expiry
             new_countdown = ""
-            renew_hint = False
+            renew_hint = ""
             error_hint = ""
             for _ in range(14):   # 最多 ~42s
                 sb.sleep(3)
@@ -562,18 +571,17 @@ def main():
                     break
                 if nm:
                     new_countdown = nm.group(1)
-                if any(k in low for k in SUCCESS_HINTS):
-                    renew_hint = True
-                    break
+                for k in SUCCESS_HINTS:
+                    if k in low:
+                        renew_hint = k
+                        break
                 for k in ERROR_HINTS:
                     if k in low:
                         error_hint = k
                         break
-                if error_hint:
-                    break
 
-            if not (new_expiry != current_expiry or new_countdown or renew_hint):
-                # 兜底: 刷新账单页再读一次
+            # 兜底: 刷新账单页再读一次(仅当尚无定论)
+            if new_expiry == current_expiry:
                 try:
                     sb.open("https://bot-hosting.net/a/billings")
                     sb.wait_for_ready_state_complete()
@@ -581,22 +589,26 @@ def main():
                 except Exception as e:
                     print(f"⚠️ 刷新账单页失败: {e}")
                 src = sb.get_page_source() or ""
-                new_expiry = extract_expiry_date(src) or new_expiry
+                low = src.lower()
+                ne = extract_expiry_date(src)
+                if ne and ne != current_expiry:
+                    new_expiry = ne
+                    print(f"✅ 刷新后检测到到期日期变化: {current_expiry} -> {ne}")
                 nm = re.search(r"Renew in (\d{2}:\d{2}:\d{2})", src)
                 if nm:
                     new_countdown = nm.group(1)
-                low = src.lower()
-                renew_hint = any(k in low for k in SUCCESS_HINTS)
-                if not error_hint:
-                    for k in ERROR_HINTS:
-                        if k in low:
-                            error_hint = k
-                            break
+                for k in SUCCESS_HINTS:
+                    if k in low:
+                        renew_hint = renew_hint or k
+                        break
+                for k in ERROR_HINTS:
+                    if k in low:
+                        error_hint = error_hint or k
+                        break
 
-            if new_expiry != current_expiry or renew_hint:
+            if new_expiry != current_expiry:
                 print(f"✅ 续期成功！")
-                if new_expiry:
-                    print(f"📅 新的到期日期: {new_expiry}")
+                print(f"📅 新的到期日期: {new_expiry}")
                 extra = f"⏱️ 可续期时间: {format_countdown(new_countdown)}后" if new_countdown else "到期日期已更新"
                 send_telegram_message(
                     format_notification(
@@ -606,7 +618,7 @@ def main():
                     )
                 )
             else:
-                # 失败诊断: 截图 + 输出页面可见文本片段
+                # 无论关键词如何, 只要日期没变就按未成功处理并输出诊断
                 try:
                     sb.save_screenshot("renew_failed.png")
                     print("📸 已保存截图 renew_failed.png")
@@ -616,10 +628,12 @@ def main():
                     body = sb.get_text("body") or ""
                     body_clean = re.sub(r"\s+", " ", body).strip()
                     if body_clean:
-                        print(f"📄 页面文本片段: {body_clean[:300]!r}")
+                        print(f"📄 最终页面文本片段: {body_clean[:500]!r}")
                 except Exception:
                     pass
                 reason = f"页面提示: {error_hint}" if error_hint else "到期日期未变化"
+                if renew_hint and not error_hint:
+                    reason = f"出现成功提示({renew_hint})但到期日期未变化"
                 print(f"⚠️ 续期结果未知，{reason}")
                 send_telegram_message(
                     format_notification(
