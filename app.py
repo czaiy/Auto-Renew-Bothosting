@@ -472,6 +472,48 @@ def main():
         if _LOGIN_METHOD == "Discord Token":
             print("ℹ️ 本次使用 Discord OAuth 登录，新的 SESSION_TOKEN 将自动更新到 Secrets")
 
+        # 注入网络拦截器: 记录所有含 "renew" 的请求/响应(诊断续期失败的关键证据)
+        try:
+            sb.execute_script(
+                "if (!window.__netlogInstalled) {"
+                "  window.__netlog = []; window.__netlogInstalled = true;"
+                "  const of = window.fetch;"
+                "  window.fetch = function() {"
+                "    const a = arguments[0];"
+                "    const url = (a && a.url) ? String(a.url) : String(a || '');"
+                "    const method = (a && a.method) ? String(a.method) : 'GET';"
+                "    const p = of.apply(this, arguments);"
+                "    if (url.toLowerCase().includes('renew')) {"
+                "      const e = {type:'fetch', method:method, url:url};"
+                "      p.then(r => { e.status = r.status;"
+                "        try { r.clone().text().then(t => { e.body = String(t).slice(0,500); window.__netlog.push(e); })"
+                "          .catch(() => { window.__netlog.push(e); }); }"
+                "        catch (err) { window.__netlog.push(e); } })"
+                "        .catch(err => { e.error = String(err); window.__netlog.push(e); });"
+                "    }"
+                "    return p;"
+                "  };"
+                "  const oo = XMLHttpRequest.prototype.open, os = XMLHttpRequest.prototype.send;"
+                "  XMLHttpRequest.prototype.open = function(m, u) {"
+                "    this.__nl = {type:'xhr', method:String(m), url:String(u)};"
+                "    return oo.apply(this, arguments);"
+                "  };"
+                "  XMLHttpRequest.prototype.send = function() {"
+                "    if (this.__nl && this.__nl.url.toLowerCase().includes('renew')) {"
+                "      const e = this.__nl;"
+                "      this.addEventListener('load', function() { e.status = this.status;"
+                "        try { e.body = String(this.responseText||'').slice(0,500); } catch (err) {}"
+                "        window.__netlog.push(e); });"
+                "      this.addEventListener('error', function() { e.error = 'network error'; window.__netlog.push(e); });"
+                "    }"
+                "    return os.apply(this, arguments);"
+                "  };"
+                "}"
+            )
+            print("🛰️ 已注入网络拦截器(记录 renew 相关请求)")
+        except Exception as e:
+            print(f"⚠️ 注入网络拦截器失败: {e}")
+
         # 提取当前到期日期
         sb.sleep(2)
         page_source = sb.get_page_source()
@@ -545,23 +587,47 @@ def main():
             time.sleep(5) 
 
             modal_button_clicked = False
-            # 站点 2026-10-16 改版: 弹窗确认按钮变更为 div[role="dialog"] button.btn-primary
-            # 旧文本选择器("Renew for 4 days")已失效, 点了没反应
-            renew_button_selectors = [
-                'div[role="dialog"] button.btn-primary',
-                'div[role="dialog"] button[type="button"]',
-                'button:contains("Renew for 4 days")',
-                'button.btn-primary',
-            ]
-            for selector in renew_button_selectors:
-                try:
-                    if sb.is_element_present(selector):
-                        sb.click(selector, timeout=8)
-                        modal_button_clicked = True
-                        print(f"✅ 已点击续期按钮 ({selector})")
-                        break
-                except Exception as e:
-                    print(f"续期按钮点击失败({selector}): {e}")
+            clicked_label = None
+            # 点击前先 dump 弹窗按钮(确认到底点了什么, 防止盲点)
+            try:
+                btn_info = sb.execute_script(
+                    "return Array.from(document.querySelectorAll('div[role=\"dialog\"] button'))"
+                    ".map(function(b){return {text:(b.innerText||'').trim().slice(0,60),"
+                    " cls:String(b.className).slice(0,80), disabled:!!b.disabled};});"
+                )
+                print(f"🪟 弹窗按钮列表: {btn_info}")
+            except Exception as e:
+                print(f"⚠️ 读取弹窗按钮失败: {e}")
+            # 优先按文字匹配确认按钮(renew/续期), 避免误点升级/取消等主样式按钮
+            try:
+                clicked_label = sb.execute_script(
+                    "const bts = Array.from(document.querySelectorAll('div[role=\"dialog\"] button'));"
+                    "const t = bts.find(function(b){return /renew|续期/i.test(b.innerText||'') && !b.disabled;});"
+                    "if (t) { t.click(); return (t.innerText||'').trim(); } return null;"
+                )
+                if clicked_label:
+                    modal_button_clicked = True
+                    print(f"✅ 已按文字匹配点击弹窗按钮: {clicked_label!r}")
+            except Exception as e:
+                print(f"⚠️ 文字匹配点击失败: {e}")
+            if not modal_button_clicked:
+                # 站点 2026-10-16 改版: 弹窗确认按钮变更为 div[role="dialog"] button.btn-primary
+                # 旧文本选择器("Renew for 4 days")已失效, 点了没反应
+                renew_button_selectors = [
+                    'div[role="dialog"] button.btn-primary',
+                    'div[role="dialog"] button[type="button"]',
+                    'button:contains("Renew for 4 days")',
+                    'button.btn-primary',
+                ]
+                for selector in renew_button_selectors:
+                    try:
+                        if sb.is_element_present(selector):
+                            sb.click(selector, timeout=8)
+                            modal_button_clicked = True
+                            print(f"✅ 已点击续期按钮 ({selector})")
+                            break
+                    except Exception as e:
+                        print(f"续期按钮点击失败({selector}): {e}")
             if not modal_button_clicked:
                 print("❌ 未找到可用的续期确认按钮")
 
@@ -611,8 +677,9 @@ def main():
             # 判定以【到期日期真实变化】为准; 关键词只作参考
             SUCCESS_HINTS = ("renewed", "renewal successful", "successfully extended",
                              "successfully", "extended your", "感谢", "已成功续期")
-            ERROR_HINTS = ("too many", "failed", "error", "please try again",
-                           "already", "invalid", "无效", "失败", "错误", "频繁", "稍后再试")
+            # 只保留强信号关键词; 泛化的 "error"/"failed"/"无效" 等在网页源码里必然存在, 只会制造误报
+            ERROR_HINTS = ("too many", "please try again", "rate limit", "not eligible",
+                           "频繁", "稍后再试", "无法续期", "renewal cooldown")
 
             new_expiry = current_expiry
             new_countdown = ""
@@ -690,8 +757,24 @@ def main():
                         print(f"📄 最终页面文本片段: {body_clean[:500]!r}")
                 except Exception:
                     pass
-                reason = f"页面提示: {error_hint}" if error_hint else "到期日期未变化"
-                if renew_hint and not error_hint:
+                # 读取网络拦截器记录的真实接口响应(诊断关键证据)
+                net_text = ""
+                try:
+                    net_text = sb.execute_script(
+                        "return (window.__netlog||[]).map(function(e){return JSON.stringify(e);}).join(' || ');") or ""
+                except Exception:
+                    pass
+                if net_text:
+                    print(f"🛰️ 续期相关请求/响应: {net_text[:800]}")
+                if error_hint == "renewal cooldown":
+                    reason = f"续期冷却中({new_countdown or '24h 内可再续'}), 非故障"
+                elif net_text:
+                    reason = f"接口响应: {net_text[:220]}"
+                elif error_hint:
+                    reason = f"页面提示: {error_hint}"
+                else:
+                    reason = "到期日期未变化"
+                if renew_hint and not error_hint and not net_text:
                     reason = f"出现成功提示({renew_hint})但到期日期未变化"
                 print(f"⚠️ 续期结果未知，{reason}")
                 send_telegram_message(
