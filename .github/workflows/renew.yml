@@ -82,11 +82,10 @@ jobs:
         env:
           NODE_LINK: ${{ env.NODE_LINK }}
         run: |
-          bash <(wget -qO- https://main.ssss.nyc.mn/setup_proxy.sh) || true
-          if pgrep -x sing-box >/dev/null 2>&1; then
-            echo "[OK] sing-box 已启动，本次走代理出口"
+          if bash <(wget -qO- https://main.ssss.nyc.mn/setup_proxy.sh); then
+            echo "[OK] 代理已就绪，本次走代理出口"
           else
-            echo "::warning::代理未启动，本次将直连（数据中心 IP 易被判 RENEW_AUTOMATED）"
+            echo "::warning::代理未就绪（节点不可用/订阅解析失败），本次将直连，数据中心 IP 易被判 RENEW_AUTOMATED"
           fi
 
       - name: 🚀 运行续期脚本
