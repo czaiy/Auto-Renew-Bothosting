@@ -591,9 +591,9 @@ def main():
             # 点击前先 dump 弹窗按钮(确认到底点了什么, 防止盲点)
             try:
                 btn_info = sb.execute_script(
-                    "return Array.from(document.querySelectorAll('div[role=\"dialog\"] button'))"
+                    "(function(){return Array.from(document.querySelectorAll('div[role=\"dialog\"] button'))"
                     ".map(function(b){return {text:(b.innerText||'').trim().slice(0,60),"
-                    " cls:String(b.className).slice(0,80), disabled:!!b.disabled};});"
+                    " cls:String(b.className).slice(0,80), disabled:!!b.disabled};});})()"
                 )
                 print(f"🪟 弹窗按钮列表: {btn_info}")
             except Exception as e:
@@ -601,9 +601,11 @@ def main():
             # 优先按文字匹配确认按钮(renew/续期), 避免误点升级/取消等主样式按钮
             try:
                 clicked_label = sb.execute_script(
+                    "(function(){"
                     "const bts = Array.from(document.querySelectorAll('div[role=\"dialog\"] button'));"
                     "const t = bts.find(function(b){return /renew|续期/i.test(b.innerText||'') && !b.disabled;});"
                     "if (t) { t.click(); return (t.innerText||'').trim(); } return null;"
+                    "})()"
                 )
                 if clicked_label:
                     modal_button_clicked = True
@@ -761,12 +763,28 @@ def main():
                 net_text = ""
                 try:
                     net_text = sb.execute_script(
-                        "return (window.__netlog||[]).map(function(e){return JSON.stringify(e);}).join(' || ');") or ""
+                        "(function(){return (window.__netlog||[]).map(function(e){return JSON.stringify(e);}).join(' || ');})()") or ""
                 except Exception:
                     pass
                 if net_text:
                     print(f"🛰️ 续期相关请求/响应: {net_text[:800]}")
-                if error_hint == "renewal cooldown":
+                # 站点新增反自动化限制: 检测到自动化环境会明确弹 "Automatic renewals are not allowed"
+                anti_bot = ""
+                try:
+                    anti_bot = sb.execute_script(
+                        "(function(){var t=(document.body.innerText||'');"
+                        "var m=t.match(/Automatic renewals are not allowed[^\\n]*/i);"
+                        "if(!m){var a=document.querySelector('[role=\"alert\"]');"
+                        "m=a&&/automatic renewals are not allowed/i.test(a.innerText||'')?[a.innerText.trim()]:null;}"
+                        "return m?m[0]:'';})()") or ""
+                except Exception:
+                    pass
+                if anti_bot:
+                    anti_bot = re.sub(r"\s+", " ", anti_bot).strip()[:200]
+                    print(f"🚫 反自动化拦截: {anti_bot}")
+                if anti_bot:
+                    reason = f"站点禁止自动续期（{anti_bot}），需在浏览器手动点击续期"
+                elif error_hint == "renewal cooldown":
                     reason = f"续期冷却中({new_countdown or '24h 内可再续'}), 非故障"
                 elif net_text:
                     reason = f"接口响应: {net_text[:220]}"
@@ -774,7 +792,7 @@ def main():
                     reason = f"页面提示: {error_hint}"
                 else:
                     reason = "到期日期未变化"
-                if renew_hint and not error_hint and not net_text:
+                if renew_hint and not anti_bot and not error_hint and not net_text:
                     reason = f"出现成功提示({renew_hint})但到期日期未变化"
                 print(f"⚠️ 续期结果未知，{reason}")
                 send_telegram_message(
