@@ -796,7 +796,8 @@ def main():
                     print(f"🚫 反自动化拦截: {anti_bot}")
                 if anti_bot:
                     reason = f"站点禁止自动续期（{anti_bot}），需在浏览器手动点击续期"
-                elif error_hint == "renewal cooldown":
+                is_cooldown = error_hint == "renewal cooldown"
+                if is_cooldown:
                     reason = f"续期冷却中({new_countdown or '24h 内可再续'}), 非故障"
                 elif net_text:
                     reason = f"接口响应: {net_text[:220]}"
@@ -814,6 +815,24 @@ def main():
                         expiry_date=current_expiry or "（未获取到）"
                     )
                 )
+                # 自动重试: 服务端拦截判定有随机性(同脚本同 IP 段时过时不过),
+                # 换一个 runner = 新 IP + 新会话 + 新 Turnstile, 大幅提高通过率
+                retry_n = int(os.environ.get("RETRY", "0") or 0)
+                max_retry = int(os.environ.get("MAX_RETRY", "2") or 2)
+                if not is_cooldown and retry_n < max_retry and GH_TOKEN:
+                    repo = os.environ.get("GITHUB_REPOSITORY") or "czaiy/Auto-Renew-Bothosting"
+                    print(f"🔁 触发自动重试 ({retry_n + 1}/{max_retry})...")
+                    try:
+                        subprocess.run(
+                            ["gh", "workflow", "run", "Auto Renew Bot-hosting",
+                             "--repo", repo, "--ref", "main",
+                             "-f", f"retry={retry_n + 1}"],
+                            env={**os.environ, "GH_TOKEN": GH_TOKEN},
+                            check=False, capture_output=True,
+                        )
+                        print(f"✅ 已排队重试运行 (retry={retry_n + 1})")
+                    except Exception as e:
+                        print(f"⚠️ 触发重试失败: {e}")
 
         else:
             if countdown_text:
