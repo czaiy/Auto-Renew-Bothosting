@@ -43,8 +43,8 @@ log "生成 $TOTAL 个节点配置(住宅/家宽关键词优先)"
 # ---------- 下载 sing-box ----------
 if [ ! -x ./sing-box ]; then
   log "获取 sing-box 最新稳定版..."
-  ver="$(curl -s --max-time 20 'https://api.github.com/repos/SagerNet/sing-box/releases' \
-    | jq -r '[.[] | select(.prerelease==false)][0].tag_name | sub("^v"; "")')"
+  ver="$(curl -s --max-time 20 'https://api.github.com/repos/SagerNet/sing-box/releases' 2>/dev/null \
+    | jq -r 'if type=="array" then ([.[] | select(.prerelease==false)][0].tag_name | sub("^v"; "")) else empty end' 2>/dev/null || true)"
   ver="${ver:-1.14.4}"
   case "$(uname -m)" in
     x86_64) arch="amd64" ;;
