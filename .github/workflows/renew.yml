@@ -27,66 +27,12 @@ jobs:
           pip install seleniumbase "requests[socks]"
           seleniumbase install chromedriver
 
-      - name: 🔗 解析节点/订阅
-        env:
-          NODE_SRC: ${{ secrets.NODE_LINK }}
-        run: |
-          set -uo pipefail
-          src="${NODE_SRC:-}"
-          if [ -z "$src" ]; then
-            echo "[WARN] NODE_LINK 未配置，稍后将直连访问"
-            exit 0
-          fi
-          case "$src" in
-            http://*|https://*)
-              echo "[INFO] 检测到订阅链接，开始解析..."
-              raw="$(curl -sL --max-time 40 -A 'v2rayN/6.31' "$src" || true)"
-              if [ -z "$raw" ]; then
-                echo "[ERROR] 订阅拉取为空（检查链接是否失效/需要 token）"
-                exit 1
-              fi
-              # 订阅通常是 base64(整体)；不是 base64 时按明文处理
-              decoded="$(printf '%s' "$raw" | base64 -d 2>/dev/null || true)"
-              if ! printf '%s' "$decoded" | grep -qE '^(vless|vmess|trojan|ss)://'; then
-                decoded="$raw"
-              fi
-              if printf '%s' "$decoded" | grep -qE '^\s*proxies:'; then
-                echo "[ERROR] 这是 Clash/YAML 订阅，本流程只支持 v2ray 格式(base64 或明文节点列表)"
-                exit 1
-              fi
-              # 优先挑住宅/家宽关键词的节点，否则取第一个可用节点
-              node="$(printf '%s\n' "$decoded" | tr -d '\r' \
-                | grep -oE '(vless|vmess|trojan|ss)://[^[:space:]]+' \
-                | grep -iE 'home|resid|hinet|dynamic|家宽|住宅' | head -n1 || true)"
-              if [ -z "$node" ]; then
-                node="$(printf '%s\n' "$decoded" | tr -d '\r' \
-                  | grep -oE '(vless|vmess|trojan|ss)://[^[:space:]]+' | head -n1 || true)"
-              fi
-              if [ -z "$node" ]; then
-                echo "[ERROR] 订阅里没有解析出 vless/vmess/trojan/ss 节点"
-                exit 1
-              fi
-              echo "::add-mask::$node"
-              printf 'NODE_LINK=%s\n' "$node" >> "$GITHUB_ENV"
-              echo "[INFO] 已从订阅解析出节点: $(printf '%s' "$node" | cut -c1-45)..."
-              ;;
-            *)
-              echo "[INFO] 使用的是单个节点链接"
-              echo "::add-mask::$src"
-              printf 'NODE_LINK=%s\n' "$src" >> "$GITHUB_ENV"
-              ;;
-          esac
-
-      - name: ⚙ 设置代理 (sing-box)
+      - name: ⚙ 设置代理 (订阅池, 逐节点故障转移)
         continue-on-error: true
         env:
-          NODE_LINK: ${{ env.NODE_LINK }}
+          NODE_LINK: ${{ secrets.NODE_LINK }}
         run: |
-          if bash <(wget -qO- https://main.ssss.nyc.mn/setup_proxy.sh); then
-            echo "[OK] 代理已就绪，本次走代理出口"
-          else
-            echo "::warning::代理未就绪（节点不可用/订阅解析失败），本次将直连，数据中心 IP 易被判 RENEW_AUTOMATED"
-          fi
+          bash setup_proxy_pool.sh
 
       - name: 🚀 运行续期脚本
         env:
