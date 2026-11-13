@@ -164,7 +164,8 @@ def main() -> int:
             continue
         result = parse_link(link)
         if not result:
-            print(f"SKIP {link[:40]}", file=sys.stderr)
+            # 注意: 公开仓库的日志人人可见, 不要打印链接片段(uuid/密码在链接里)
+            print("SKIP unparsable node", file=sys.stderr)
             continue
         parsed.append(result)
     # 住宅/家宽关键词排前面
