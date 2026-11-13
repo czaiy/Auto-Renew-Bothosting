@@ -185,10 +185,15 @@ def extract_countdown_text_keyword(text: str) -> bool:
 
 
 # 获取过期日期
+MONTHS = {m: i + 1 for i, m in enumerate(
+    ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"])}
+
+
 def extract_expiry_date(page_source: str) -> str:
     patterns = [
         r"[Ee]xpires\s*[:\-]?\s*(\d{4}/\d{2}/\d{2})",   # Expires 2026/07/07
         r"[Ee]xpires\s*[:\-]?\s*(\d{2}/\d{2}/\d{4})",   # Expires 07/07/2026 (MM/DD/YYYY)
+        r"[Ee]xpires\s*[:\-]?\s*(\d{1,2}\s+[A-Za-z]{3,9}\s+\d{4})",  # Expires 13 Nov 2026 (11-13 改版)
         r"(\d{4}/\d{2}/\d{2})\s*[\-–]\s*renew",        # 2026/07/07 - renew
         r"(\d{2}/\d{2}/\d{4})\s*[\-–]\s*renew",        # 07/07/2026 - renew
         r"(\d{4}/\d{2}/\d{2})\s*[\-–]\s*renew manually to extend for 4 days", # 2026/07/07 - renew manually to extend for 4 days
@@ -197,6 +202,12 @@ def extract_expiry_date(page_source: str) -> str:
         match = re.search(pattern, page_source)
         if match:
             date_str = match.group(1)
+            # 英文月份格式: 13 Nov 2026 -> 2026/11/13
+            m = re.match(r"(\d{1,2})\s+([A-Za-z]{3,9})\s+(\d{4})", date_str)
+            if m:
+                mon = MONTHS.get(m.group(2)[:3].lower())
+                if mon:
+                    return f"{m.group(3)}/{mon:02d}/{int(m.group(1)):02d}"
             # 如果是 MM/DD/YYYY 格式，转换为 YYYY/MM/DD
             if len(date_str.split('/')[-1]) == 4:  # 年份长度4
                 parts = date_str.split('/')
@@ -424,15 +435,15 @@ def main():
                 if value:
                     sb.add_cookie({"name": name, "value": value, "domain": "bot-hosting.net"})
 
-            print("🌐 访问 https://bot-hosting.net/a/billings ...")
-            sb.open("https://bot-hosting.net/a/billings")
+            print("🌐 访问 https://bot-hosting.net/dash/billings ...")
+            sb.open("https://bot-hosting.net/dash/billings")
             sb.wait_for_ready_state_complete()
             sb.sleep(3)
             current_url = sb.get_current_url()
             current_title = sb.get_title()
             print(f"📝 当前URL: {current_url}, Title: {current_title}")
 
-            if "/a/billings" in current_url and "/login" not in current_url and "error=" not in current_url:
+            if "/dash/billings" in current_url and "/login" not in current_url and "error=" not in current_url:
                 login_ok = True
                 print("✅ SESSION_TOKEN 登录成功, 当前已到达账单页")
             else:
@@ -443,8 +454,8 @@ def main():
             _LOGIN_METHOD = "Discord Token"
             print("\n🔄 SESSION_TOKEN 登录失败或未配置，尝试 Discord OAuth 登录...")
             if do_discord_login(sb):
-                print("🌐 访问 https://bot-hosting.net/a/billings ...")
-                sb.open("https://bot-hosting.net/a/billings")
+                print("🌐 访问 https://bot-hosting.net/dash/billings ...")
+                sb.open("https://bot-hosting.net/dash/billings")
                 sb.wait_for_ready_state_complete()
                 sb.sleep(3)
                 current_url = sb.get_current_url()
@@ -527,9 +538,10 @@ def main():
         outer_renew_selector = None
         countdown_text = None
         possible_selectors = [
-            'button:contains("Renew")',
             'button:contains("Renew free plan")',
+            'button:contains("Renew")',
             'a:contains("Renew")',
+            'button.btn-primary.btn-sm',
             '[class*="renew"]',
             '[class*="Renew"]',
         ]
@@ -711,7 +723,7 @@ def main():
             # 兜底: 刷新账单页再读一次(仅当尚无定论)
             if new_expiry == current_expiry:
                 try:
-                    sb.open("https://bot-hosting.net/a/billings")
+                    sb.open("https://bot-hosting.net/dash/billings")
                     sb.wait_for_ready_state_complete()
                     sb.sleep(3)
                 except Exception as e:
