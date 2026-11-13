@@ -39,7 +39,6 @@ mkdir -p pool
 python3 gen_proxy_configs.py pool < "$LINKS_FILE" > pool/nodes.list || die "节点全部解析失败"
 TOTAL=$(wc -l < pool/nodes.list | tr -d ' ')
 log "生成 $TOTAL 个节点配置(住宅/家宽关键词优先)"
-echo "::add-mask::$(head -n1 "$LINKS_FILE" | cut -c1-0)"
 
 # ---------- 下载 sing-box ----------
 if [ ! -x ./sing-box ]; then
