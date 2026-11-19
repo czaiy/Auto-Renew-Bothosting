@@ -462,7 +462,7 @@ def main():
                 current_title = sb.get_title()
                 print(f"📝 当前URL: {current_url}, Title: {current_title}")
 
-                if "a/billings" in current_url:
+                if "/dash/billings" in current_url and "/login" not in current_url and "error=" not in current_url:
                     login_ok = True
                     print("✅ Discord OAuth 登录成功,当前已到达账单页")
                 else:
@@ -477,6 +477,23 @@ def main():
             elif SESSION_TOKEN and DC_TOKEN:
                 error_msg = "SESSION_TOKEN 和 Discord OAuth 均失败"
             send_telegram_message(format_notification("❌ 登录失败", error=error_msg))
+            # 自动重试: 登录失败可能只是瞬时网络/页面异常, 换个 runner 再试
+            retry_n = int(os.environ.get("RETRY", "0") or 0)
+            max_retry = int(os.environ.get("MAX_RETRY", "2") or 2)
+            if retry_n < max_retry and GH_TOKEN:
+                repo = os.environ.get("GITHUB_REPOSITORY") or "czaiy/Auto-Renew-Bothosting"
+                print(f"🔁 登录失败, 触发自动重试 ({retry_n + 1}/{max_retry})...")
+                try:
+                    subprocess.run(
+                        ["gh", "workflow", "run", "Auto Renew Bot-hosting",
+                         "--repo", repo, "--ref", "main",
+                         "-f", f"retry={retry_n + 1}"],
+                        env={**os.environ, "GH_TOKEN": GH_TOKEN},
+                        check=False, capture_output=True,
+                    )
+                    print(f"✅ 已排队重试运行 (retry={retry_n + 1})")
+                except Exception as e:
+                    print(f"⚠️ 触发重试失败: {e}")
             # 登录失败必须让 Actions 变红, 避免假绿
             sys.exit(1)
 
